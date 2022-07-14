@@ -1,0 +1,24 @@
+---
+# host passes a variable which is going to pass to the playbook what host 
+# it should run on
+# remote_user ec2-user to connect to the remote instance.
+# become_user root because we need sudo privileges
+# We are running one play which is using the Ansible YUM module.
+# Which requires the name and the state. Present the pachage will be installed, 
+# Absent the package will be removed
+
+
+- hosts: "{{ passed_in_hosts }}"
+  become: yes
+  remote_user: ec2-user
+  become_user: root
+  tasks:
+    - name: install httpd
+      yum:
+        name: httpd
+        state: present
+    - name: Start and Enable Apache
+      service:
+        name: httpd
+        state: started
+        enabled: yes     
