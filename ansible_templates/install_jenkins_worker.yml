@@ -1,0 +1,91 @@
+---
+# Which hosts is going to run against
+# And how it's going to connect to the targe nodes
+
+- hosts: "{{ passed_in_hosts }}"
+  become: yes
+  remote_user: ec2-user
+  become_user: root
+  tasks: 
+    - name: Generate SSH KeyPair
+      openssh_keypair:
+        path: /home/ec2-user/.ssh/id_rsa
+        type: rsa
+        size: 2048
+        group: ec2-user
+        owner: ec2-user
+
+    - name: Add own Key to authorized_keys file
+      shell: "cat /home/ec2-user/.ssh/id_rsa.pub >> /home/ec2-user/.ssh/authorized_keys && chmod 600 /home/ec2-user/.ssh/authorized_keys"
+
+# Copy over the jenkins worker xml config file for integrating with the jenkins master as a jenkins worker
+    - name: Copy over Jenkins worker Node creationg payload xml
+      vars: 
+        ipv4: "{{ ansible_default_ipv4.address }}" #Ansible internal Variable and populated by Ansible as a metadata of the system on whych is executing (On this case will be IPv4 of the Jenkins Worker node)
+      template: #Specially used for copying over Jinja template
+        src: node.j2
+        dest: /home/ec2-user/node.xml
+        owner: ec2-user
+        mode: '0644'
+
+    - name: Read generated private Key id_rsa
+      slurp: #To read in the contents of the private key generated as a base 64 encoded blob and we're then registering the read-in data to a variable using the register parameter and setting that variable name to pkey
+        src: /home/ec2-user/.ssh/id_rsa
+      register: pkey
+
+    - name: Copy over creds.xml and create Jenkins credential
+      vars:
+        priv_key: "{{ pkey['content'] | b64decode }}" # Decoding the pkey variable decoded back into the normal string and passed to the Jinja template as priv_key
+        ipv4: "{{ ansible_default_ipv4.address }}"
+      template:
+        src: cred-privkey.j2 # .j2 resides on the Ansible controller 
+        dest: /home/ec2-user/creds.xml #As we copy them down these values are substituted in them and then the file is copied over to the destination adn we've also changed the name of the file to creds.xml
+
+    - name: Install dependencies
+      yum:
+        name: "{{ package }}"
+      vars:
+        package:
+          - wget
+          - java-1.8.0-openjdk-devel
+          - git
+
+# We will be downloading the Jenkins CLI binary from the jenkins master
+    - name: Get Jenkins CLI jar file
+      vars:
+        master: "{{ master_ip }}" #master_ip variable will be passed through the ansible playbook CLI argument through the extra variable FLAG
+      get_url:
+        url: "http://{{ master }}:8080/jnlpJars/jenkins-cli.jar"
+        dest: /home/ec2-user/jenkins-cli.jar
+        force: yes #Regardless of wether it already exists or not
+      register: download #Registering a variable download
+      ignore_errors: yes
+      until: download.status_code|default(200) == 200 #HTTP 200 
+      retries: 5
+      delay: 5 #5 seconds delay in between
+
+    - name: Place Jenkins Auth file #Copying over the jenkins auth file which will be used to connect to the Jenkins server. And contain the user name and password for the Jenkins Server
+      copy:
+        src: jenkins_auth #Name of the file as it resides on the Ansible controller node
+        dest: /home/ec2-user/
+        owner: ec2-user
+        mode: '0600'
+
+# We will actually be running the jenkins API binary command
+# Jenkins authorization file that we copied over: jenkins_auth
+# master_ip: when the Ansible playbook is invoked
+
+    - name: Create Jenkins credential
+      vars:
+        master: "{{ master_ip }}"
+      shell: "cat /home/ec2-user/creds.xml | java -jar /home/ec2-user/jenkins-cli.jar -auth @/home/ec2-user/jenkins_auth -s http://{{ master }}:8080 create-credentials-by-xml system::system::jenkins _"
+
+    - name: Register node as worker
+      vars:
+        master: "{{ master_ip }}"
+      shell: "cat /home/ec2-user/node.xml | java -jar /home/ec2-user/jenkins-cli.jar -auth @/home/ec2-user/jenkins_auth -s http://{{ master }}:8080 create-node"
+
+
+
+
+

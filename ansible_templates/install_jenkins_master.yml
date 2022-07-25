@@ -1,0 +1,82 @@
+---
+# How the palybook will find the host that it needs to run against
+# And how is going to connect to the remote host in question
+# Passing the host via the variable passed_in_host which will be defined to the ansible dynamic inventory
+# Telling the playbook to become the ec2 user to connect to the remote instance (Jenkins master)
+# Also telling to become root to run all the plays inside this task
+- hosts: "{{ passed_in_hosts }}"
+  become: yes
+  remote_user: ec2-user
+  become_user: root
+  tasks:
+    - name: install dependencies
+      yum:
+        name: "{{ package }}" #Package variable containing those 3 values wget java and git
+        state: present
+      vars:
+        package:
+        - wget
+        - java-1.8.0-openjdk-devel
+        - git
+    - name: clone preconfigured jenkins files
+      git:
+        repo: https://github.com/linuxacademy/content-terraform-jenkins.git
+        dest: /tmp/jenkins
+
+    - name: Setup Jenkins repo #Download the jenkins repo configuration from the URL
+      get_url:
+        url: https://pkg.jenkins.io/redhat/jenkins.repo
+        dest: /etc/yum.repos.d/jenkins.repo
+    
+    - name: Import Jenlins Repo GPG Key
+      rpm_key: #Used for installing RPM Keys 
+        state: present
+        key: https://pkg.jenkins.io/redhat/jenkins.io.key
+
+    - name:
+      yum:
+        name: jenkins
+        state: present
+
+    - name: Temporarily Stop Jenkins
+      service:
+        name: jenkins
+        state: stopped
+    
+    - name: Delete Jenkins default dir
+      file:
+        state: absent
+        patch: /var/lib/jenkins
+
+    - name: Copy over cloned Jenkins /var/lib/jenkins
+      copy:
+        remote_src: yes # Tells the playbook not to copy from the terraform controller node, but to go and look for the source directory on the same system that it is running
+        src: /tmp/jenkins/jenkins
+        dest: /var/lib
+
+    - name: Restore jenkins user ownership on /var/lib/jenkins
+      file:
+        path: /var/lib/jenkins
+        state: directory #Letting know it is a directory
+        recurse: yes
+        owner: jenkins
+
+    - name: Start Jenkins
+      service:
+        name: jenkins
+        state: started
+        enabled: yes
+
+    - name: Wait until Jenkins is Up
+      shell: result_first=1; while [[ $result_first != 0 ]]; do if [[`grep 'Jenkins is fully up and running' /var/log/jenkins/jenkins.log` ]]; then result_first=0; else sleep 4; fi; done
+      register: result #Create a parameter for Ansible to store the results of the above shell command
+      until: result.rc == 0 #Until parameter in this play to keep executing this play until the result conde returned by the above shell command is zero (Different that 0 is not found)
+
+
+  
+
+
+
+
+
+
